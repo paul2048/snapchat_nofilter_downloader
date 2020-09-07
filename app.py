@@ -10,6 +10,10 @@ from win32_setctime import setctime
 
 
 def main():
+    # Keep track of the number of downloads of images and videos
+    images_dls = 0
+    videos_dls = 0
+
     # Get the location of the zip file from Snapchat
     mydata = [
         fname for fname in os.listdir("./")
@@ -69,6 +73,7 @@ def main():
                     # Convert the exif `dict` back to `bytes` and save the image
                     exif_bytes = piexif.dump(exif_dict)
                     img.save(f"media/{timestamp}{extension}", "jpeg", exif=exif_bytes)
+                    images_dls += 1
                 # Edit the date and time of the time when the video was recorded
                 else:
                     # The number of seconds from 1970:01:01 00:00:00 UTC to the
@@ -76,10 +81,16 @@ def main():
                     secs = datetime.strptime(timestamp, "%Y-%m-%d %H-%M-%S").timestamp()
                     # Save the video in the media directory
                     setctime(f"media/{timestamp}{extension}", secs)
+                    videos_dls += 1
                 print(f"Downloaded {timestamp}{extension}")
-            # If `dl_link` is an invalid URL
-            except requests.exceptions.MissingSchema:
+            # If `dl_link` is an invalid URL or users's OS is not campatible
+            # (videos can only be saved on Windows with the code above)
+            except (requests.exceptions.MissingSchema, OSError):
                 print(f"Can't download {timestamp}{extension}")
+
+    print(f"Images downloaded: {images_dls}")
+    print(f"Videos downloaded: {videos_dls}")
+    print(f"Total downloads:   {images_dls + videos_dls}")
 
 
 if __name__ == "__main__":
