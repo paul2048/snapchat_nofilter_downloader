@@ -1,6 +1,6 @@
 .vscode/
 env/
-html/
-json/
 media/
+mydata/
 index.html
+*.zip
