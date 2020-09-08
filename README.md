@@ -23,6 +23,6 @@ This program downloads your Snapchat images from Memories but without filters. T
 2. Request your Snapchat data within the app by going to Settings -> My Data -> Submit Request
 3. Download your data from your your email.
 4. Move the downloaded zip file inside of the `snapchat_nofilter_downloader` directory.
-5. Run `pip3 install requirements.txt` in your terminal.
+5. Run `pip3 install -r requirements.txt` in your terminal.
 6. Run `python3 app.py` in your terminal.
 7. Wait for your images to be downloaded inside the `media` directory.
