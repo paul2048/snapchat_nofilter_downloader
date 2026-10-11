@@ -1,6 +1,11 @@
 .vscode/
 env/
+.venv/
 media/
 mydata/
+mydata*
 index.html
 *.zip
+snapchat_backup_output/
+__pycache__/
+.pytest_cache/
