@@ -10,11 +10,12 @@ What it does:
   writes that date into each file. Photos get EXIF `DateTimeOriginal` with the time-zone offset,
   videos get the MP4 `creation_time`, and every file's modification time is set too. Your gallery
   then shows memories when they happened, not as "today". The time zone comes from the memory's
-  location when Snapchat recorded one.
+  location when Snapchat recorded one, otherwise from the locations of the memories saved around
+  it (e.g. all memories of a year spent abroad get that country's time).
 - **Long videos re-joined.** A long recording can come out of Snapchat as several short (~10 s)
   memories. Parts that belong together are detected (saved back to back, same camera settings, and
-  the last frame of one part matches the first frame of the next) and joined losslessly into one
-  video. The original parts are kept in `extras/`.
+  the last frame of one part continues into the first frame of the next, even in shaky or dark
+  footage) and joined losslessly into one video. The original parts are kept in `extras/`.
 - **No duplicates on the phone.** Everything is compared with what is already in your phone's
   gallery, including the copies Snapchat saved to your camera roll with the caption burned in,
   and copies holding only part of a long video. Only new files are copied to the phone. Memories
@@ -86,9 +87,10 @@ This will:
    folder is hidden from the gallery, so look through it with a file manager and delete it when
    you're happy.
 
-Leave out `--clean-phone` if you don't want anything on the phone moved. If you're not sure of the
-time zone for memories without a location, add e.g. `--timezone Europe/London` (the default is
-your computer's).
+Leave out `--clean-phone` if you don't want anything on the phone moved. Memories without a
+location take the time zone of the memories saved around them; when that can't be told (none
+nearby, or they disagree), your computer's time zone is used. Add e.g. `--timezone Europe/London`
+to use another one. The report shows which zone each memory got.
 
 ### 5. Check, then keep a copy
 
@@ -142,7 +144,7 @@ Without `--gallery` nothing is compared and every memory goes to `to_phone/`.
 | `--no-push` | with `--adb`: compare only, don't copy to the phone |
 | `--clean-phone` | move redundant copies on the phone into a hidden review folder |
 | `-y`, `--yes` | don't ask before changing the phone |
-| `--timezone ZONE` | time zone for memories without a location (default: this computer's) |
+| `--timezone ZONE` | time zone for memories whose zone can't be told from their own or nearby memories' locations (default: this computer's) |
 | `--no-location-timezone` | use `--timezone` for every memory |
 | `--no-gps` | don't write the location into the files |
 | `--overlays separate\|burn\|drop` | keep captions/stickers as separate PNGs (default), draw them on, or drop them |

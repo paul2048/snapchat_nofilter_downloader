@@ -6,10 +6,11 @@ the file's modification time. All three are set, so the result is right
 whichever way the files reach the phone.
 """
 
+import bisect
 import logging
 import os
 import shutil
-from datetime import timezone
+from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import piexif
@@ -23,8 +24,13 @@ _OFFSET_TIME, _OFFSET_TIME_ORIGINAL, _OFFSET_TIME_DIGITIZED = 36880, 36881, 3688
 
 class TimezoneResolver:
     """Snapchat dates are UTC. Photos store local time, so we need the time
-    zone the snap was taken in: from its location when known, otherwise the
-    one given by the user, otherwise this computer's."""
+    zone the snap was taken in: from its location when known, otherwise from
+    the locations of the memories saved around it, otherwise the one given
+    by the user, otherwise this computer's."""
+
+    # A memory without a location takes the zone of a located one this close
+    # in time (or of the located ones before and after it, when they agree).
+    NEARBY = timedelta(days=7)
 
     def __init__(self, default=None, use_location=True):
         self.default = None
@@ -42,22 +48,53 @@ class TimezoneResolver:
             except Exception:
                 log.info("timezonefinder not installed: using a single time zone for all memories.")
 
-    def localize(self, dt_utc, lat=None, lon=None):
-        """Return (local aware datetime, zone name)."""
-        if self.finder is not None and lat is not None and lon is not None:
-            try:
-                name = self.finder.timezone_at(lat=lat, lng=lon)
-            except Exception:
-                name = None
-            if name:
-                try:
-                    return dt_utc.astimezone(ZoneInfo(name)), name
-                except ZoneInfoNotFoundError:
-                    pass
+    def zone_at(self, lat, lon):
+        if self.finder is None or lat is None or lon is None:
+            return None
+        try:
+            return ZoneInfo(self.finder.timezone_at(lat=lat, lng=lon))
+        except Exception:  # at sea, or a zone this Python does not know
+            return None
+
+    def _fallback(self, dt_utc):
         if self.default is not None:
             return dt_utc.astimezone(self.default), self.default.key
         local = dt_utc.astimezone()
         return local, local.tzname() or "local"
+
+    def localize(self, dt_utc, lat=None, lon=None):
+        """Return (local aware datetime, zone name)."""
+        zone = self.zone_at(lat, lon)
+        return (dt_utc.astimezone(zone), zone.key) if zone else self._fallback(dt_utc)
+
+    def localize_all(self, points):
+        """[(dt_utc, lat, lon)] -> [(local aware datetime, zone name, nearby)],
+        where `nearby` tells that the zone comes from other memories."""
+        zones = [self.zone_at(lat, lon) if dt else None for dt, lat, lon in points]
+        located = sorted(((dt, z) for (dt, _, _), z in zip(points, zones) if z), key=lambda x: x[0])
+        times = [dt for dt, _ in located]
+        out = []
+        for (dt, _, _), zone in zip(points, zones):
+            if dt is None:
+                out.append((None, "", False))
+                continue
+            nearby = zone is None
+            if nearby:
+                zone = self._zone_around(dt, times, located)
+            if zone is None:
+                out.append((*self._fallback(dt), False))
+            else:
+                out.append((dt.astimezone(zone), zone.key, nearby))
+        return out
+
+    def _zone_around(self, dt, times, located):
+        i = bisect.bisect_left(times, dt)
+        before = located[i - 1] if i > 0 else None
+        after = located[i] if i < len(located) else None
+        if before and after and before[1].key == after[1].key:
+            return before[1]
+        near = [x for x in (before, after) if x and abs(x[0] - dt) <= self.NEARBY]
+        return min(near, key=lambda x: abs(x[0] - dt))[1] if near else None
 
 
 def _offset(dt):

@@ -59,10 +59,11 @@ def build_parser():
 
     t = p.add_argument_group("dates")
     t.add_argument("--timezone", metavar="ZONE",
-                   help="time zone for memories without a location, e.g. Europe/London "
+                   help="time zone for memories whose zone cannot be told from their own location "
+                        "or that of the memories saved around them, e.g. Europe/London "
                         "(default: this computer's)")
     t.add_argument("--no-location-timezone", action="store_true",
-                   help="do not use a memory's location to find its time zone")
+                   help="do not use locations to find time zones: --timezone for every memory")
     t.add_argument("--no-gps", action="store_true", help="do not write the location into the files")
 
     v = p.add_argument_group("videos and overlays")

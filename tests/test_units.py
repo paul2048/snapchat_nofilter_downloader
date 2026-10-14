@@ -39,6 +39,43 @@ def test_parse_history_html_old_format():
     assert m.download_link.endswith("mid=XY") and m.mid == "xy"
 
 
+def test_bundled_files_without_ids_are_matched_by_their_time_stamp(tmp_path):
+    """Recent exports have no download links, so no ids: each file is matched
+    to its memory by the time Snapchat stamps it with in the zip, even when a
+    file of the same day is missing (pairing by order would shift them)."""
+    import json
+    import zipfile
+
+    from snapchat_backup.export import read_export
+
+    def entry(date, kind):
+        return {"Date": f"{date} UTC", "Media Type": kind, "Location": "Latitude, Longitude: 0.0, 0.0",
+                "Download Link": "", "Media Download Url": ""}
+
+    history = {"Saved Media": [
+        entry("2020-06-27 10:00:01", "Image"),
+        entry("2020-06-27 09:00:00", "Image"),  # its file is missing from the export
+        entry("2020-06-27 00:43:40", "Video"),
+        entry("2020-06-27 00:43:40", "Video"),
+    ]}
+    photo = "2020-06-27_aaaaaaaa-0000-0000-0000-000000000001-main.jpg"
+    videos = ["2020-06-27_aaaaaaaa-0000-0000-0000-000000000002-main.mp4",
+              "2020-06-27_aaaaaaaa-0000-0000-0000-000000000003-main.mp4"]
+    export = tmp_path / "mydata~1.zip"
+    with zipfile.ZipFile(export, "w") as z:
+        z.writestr("json/memories_history.json", json.dumps(history))
+        z.writestr(zipfile.ZipInfo(f"memories/{photo}", (2020, 6, 27, 10, 0, 0)), b"x")  # 2 s resolution
+        for name in videos:
+            z.writestr(zipfile.ZipInfo(f"memories/{name}", (2020, 6, 27, 0, 43, 40)), b"x")
+    memories, _ = read_export([export], tmp_path / "media")
+    by_time = {}
+    for m in memories:
+        by_time.setdefault(m.date_utc.strftime("%H:%M:%S"), []).append(m.main.name if m.main else None)
+    assert by_time == {"10:00:01": [photo], "09:00:00": [None], "00:43:40": videos}
+    assert all(m.time_exact for m in memories)
+    assert len(memories) == 4  # no file was left over as an extra memory
+
+
 @pytest.mark.parametrize("text,expected", [
     ("Latitude, Longitude: 35.6762, 139.6503", (35.6762, 139.6503)),
     ("Latitude, Longitude: -33.86 , 151.2", (-33.86, 151.2)),
@@ -65,6 +102,34 @@ def test_timezone_from_location_and_fallback():
     assert name == "America/New_York" and local.hour == 7
 
 
+def test_time_zone_of_memories_without_location():
+    r = TimezoneResolver(default="America/New_York")
+    if r.finder is None:
+        pytest.skip("timezonefinder not installed")
+    day = timedelta(days=1)
+    t0 = datetime(2018, 1, 1, 12, 0, tzinfo=timezone.utc)
+    BUCHAREST, LONDON = (47.65, 23.58), (51.57, -0.40)
+    points = [
+        (t0, *BUCHAREST),
+        (t0 + 40 * day, None, None),  # between two Bucharest memories, however far: Bucharest
+        (t0 + 90 * day, *BUCHAREST),
+        (t0 + 93 * day, None, None),  # the next one is London, but Bucharest is 3 days away
+        (t0 + 140 * day, None, None),  # Bucharest before, London after, both far: the default
+        (t0 + 180 * day, *LONDON),
+        (t0 + 185 * day, None, None),  # nothing after, London 5 days before
+        (t0 + 300 * day, None, None),  # nothing after, London far before: the default
+        (None, None, None),
+    ]
+    zones = [(name, nearby) for _, name, nearby in r.localize_all(points)]
+    assert zones == [
+        ("Europe/Bucharest", False), ("Europe/Bucharest", True), ("Europe/Bucharest", False),
+        ("Europe/Bucharest", True), ("America/New_York", False), ("Europe/London", False),
+        ("Europe/London", True), ("America/New_York", False), ("", False),
+    ]
+    assert TimezoneResolver(default="America/New_York", use_location=False).localize_all(points[:2])[1][1] == \
+        "America/New_York"
+
+
 # --- segment chaining logic, without real videos -----------------------------
 
 
@@ -85,15 +150,26 @@ class Clip:
     first: int  # "scene" id of the first frame
     last: int  # "scene" id of the last frame
     main: str = ""
+    pans: tuple = None  # (first two, last two) pan positions over scene `first`
 
 
-def _hash(scene):
+def _thumb(scene, pan=0):
+    """A smooth 32x32 picture; `pan` moves the camera sideways over it."""
+    from PIL import Image
+
     rng = np.random.default_rng(scene)
-    return rng.integers(0, 256, 32, dtype=np.uint8)
+    grid = rng.integers(0, 256, (3, 4, 3), dtype=np.uint8)
+    wide = np.asarray(Image.fromarray(grid).resize((96, 32), Image.Resampling.BICUBIC))
+    return wide[:, pan:pan + 32]
 
 
 def _edges(clip):
-    return (_hash(clip.first), 50.0), (_hash(clip.last), 50.0)
+    if clip.pans:
+        (f0, f1), (l0, l1) = clip.pans
+        return (np.stack([_thumb(clip.first, f0), _thumb(clip.first, f1)]),
+                np.stack([_thumb(clip.first, l0), _thumb(clip.first, l1)]))
+    first, last = _thumb(clip.first), _thumb(clip.last)
+    return np.stack([first, first]), np.stack([last, last])
 
 
 T0 = datetime(2023, 1, 1, tzinfo=timezone.utc)
@@ -128,6 +204,49 @@ def test_no_join_when_parameters_or_lengths_differ():
     assert len(find_chains(far, SegmentConfig(), _edges)) == 2
     assert len(find_chains(clips[:1] + [Clip("b", T0 + timedelta(seconds=10), Info(10), 2, 3)],
                            SegmentConfig(enabled=False), _edges)) == 2
+
+
+def test_parts_differ_in_frame_rate_and_length():
+    """Phones record at a variable frame rate and Snapchat's full parts vary
+    in length: neither may keep the parts of one recording apart."""
+    from snapchat_backup.media import VideoInfo
+
+    a = VideoInfo(10.0, 540, 960, 0, "h264", "yuv420p", 24.9, "aac", 44100, 1)
+    b = VideoInfo(10.0, 540, 960, 0, "h264", "yuv420p", 20.7, "aac", 44100, 1)
+    assert a.signature() == b.signature()
+    clips = [
+        Clip("a1", T0, Info(9.0), 1, 2),
+        Clip("a2", T0 + timedelta(seconds=10), Info(10.8), 2, 3),
+        Clip("a3", T0 + timedelta(seconds=20), Info(9.0), 3, 4),
+    ]
+    assert names(find_chains(clips, SegmentConfig(), _edges)) == [["a1", "a2", "a3"]]
+
+
+def test_cut_is_judged_against_the_motion():
+    """A shaky recording changes many pixels at the cut, as it does between
+    any two frames: still joined. The same jump in a steady video is a
+    different moment: not joined."""
+    from snapchat_backup.media import frame_difference
+
+    cfg = SegmentConfig()
+    # The camera pans 3 px per frame; the cut continues the pan.
+    shaky = [Clip("a", T0, Info(10), 5, 5, pans=((0, 3), (24, 27))),
+             Clip("b", T0 + timedelta(seconds=10), Info(6), 5, 5, pans=((30, 33), (57, 60)))]
+    jump = frame_difference(_thumb(5, 27), _thumb(5, 30))
+    assert jump > cfg.still  # not a near-identical picture
+    assert names(find_chains(shaky, cfg, _edges)) == [["a", "b"]]
+    # Steady camera, then the picture jumps by the same amount.
+    steady = [Clip("a", T0, Info(10), 5, 5, pans=((0, 0), (27, 27))),
+              Clip("b", T0 + timedelta(seconds=10), Info(6), 5, 5, pans=((30, 30), (30, 30)))]
+    assert len(find_chains(steady, cfg, _edges)) == 2
+
+
+def test_same_timestamp_parts_of_a_steady_scene_keep_their_order():
+    """Parts saved with one timestamp: a walk down the same street looks
+    alike 10 s apart, but only the real cut is as smooth as the motion."""
+    pans = {"p1": ((0, 1), (9, 10)), "p2": ((11, 12), (20, 21)), "p3": ((22, 23), (30, 31))}
+    clips = [Clip(n, T0, Info(10 if n != "p3" else 4), 7, 7, pans=pans[n]) for n in ("p3", "p1", "p2")]
+    assert names(find_chains(clips, SegmentConfig(), _edges)) == [["p1", "p2", "p3"]]
 
 
 def test_photo_metadata_keeps_orientation_and_sets_offset(tmp_path):
