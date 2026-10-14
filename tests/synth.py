@@ -187,7 +187,8 @@ def build(root: Path, base_url: str):
     # --- videos ---------------------------------------------------------
     v1 = pan_video(11, tmp / "v1_full.mp4", 25, tmp)
     for i, (start, length) in enumerate([(0, 10), (10, 10), (20, 5)]):
-        part = cut(v1, media / f"v1_part{i + 1}.mp4", start, length)
+        # Phones record at a variable frame rate: parts differ in average fps.
+        part = cut(v1, media / f"v1_part{i + 1}.mp4", start, length, "fps=24" if i == 1 else None)
         add(8 + i, f"2023-10-01 12:00:{start:02d}", "Video", LONDON, "bundled", part)
     # The phone only has the first 10 s (with caption): redundant once the full video is imported
     cut(v1, phone / "Pictures/Snapchat/Snapchat-555.mp4", 0, 10, CAPTION_VF)
@@ -222,7 +223,8 @@ def build(root: Path, base_url: str):
 
     # --- unrelated phone content ------------------------------------------
     own = jpeg(photo(40), phone / "DCIM/Camera/IMG_20230101_100000.jpg")
-    shutil.copyfile(own, phone / "DCIM/Camera/IMG_20230101_100000(1).jpg")  # gallery-internal duplicate
+    # Gallery-internal duplicate, same time stamp (e.g. restored from a backup)
+    shutil.copy2(own, phone / "DCIM/Camera/IMG_20230101_100000(1).jpg")
     pan_video(41, phone / "Movies/long_phone_video.mp4", 40, tmp, size=(W // 2, H // 2))
     jpeg(photo(42), phone / "DCIM/.thumbnails/123.jpg")
     jpeg(photo(1), phone / "Pictures/Snapchat/.trashed-1700000000-old.jpg")
@@ -236,16 +238,19 @@ def build(root: Path, base_url: str):
         for name, path in bundled.items():
             z.write(path, name)
 
+    # Memories without a location take the time zone of located ones saved
+    # within a week (Tokyo after p2, London after v1); the text snaps are a
+    # month away from any, so they get the default (Europe/Paris in the tests).
     expect = {
         "new": {"Snapchat_20230801_120000.jpg",  # p2, Tokyo time
-                "Snapchat_20230802_120000.jpg",  # p3 (Europe/Paris default)
-                "Snapchat_20230803_120000.jpg",  # p4
-                "Snapchat_20230902_120000.jpg", "Snapchat_20230903_120000.jpg",  # text snaps
+                "Snapchat_20230802_190000.jpg",  # p3, a day after p2: Tokyo
+                "Snapchat_20230803_190000.jpg",  # p4
+                "Snapchat_20230902_120000.jpg", "Snapchat_20230903_120000.jpg",  # text snaps (Paris)
                 "Snapchat_20231001_130000.mp4",  # v1 re-joined (London, BST)
-                "Snapchat_20231003_200000.mp4",  # v3 from zip
-                "Snapchat_20231004_100000.mp4", "Snapchat_20231004_100010.mp4",  # two separate clips
-                "Snapchat_20231007_100000.mp4"},  # black video
-        "on_phone": {"Snapchat_20230715_194211.jpg", "Snapchat_20231002_110000.mp4", "Snapchat_20231005_100000.mp4"},
+                "Snapchat_20231003_190000.mp4",  # v3 from zip (London)
+                "Snapchat_20231004_090000.mp4", "Snapchat_20231004_090010.mp4",  # two separate clips
+                "Snapchat_20231007_090000.mp4"},  # black video
+        "on_phone": {"Snapchat_20230715_194211.jpg", "Snapchat_20231002_100000.mp4", "Snapchat_20231005_090000.mp4"},
         "export_duplicate": {"Snapchat_20230901_120000.jpg"},
         "cleanup": {"Pictures/Snapchat/Snapchat-555.mp4", "DCIM/Camera/IMG_20230101_100000(1).jpg"},
     }

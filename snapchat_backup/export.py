@@ -13,6 +13,7 @@ When "Export your Memories" was selected, the media itself is bundled in a
 `<date>_<id>-overlay.png` holding the caption/sticker layer.
 """
 
+import bisect
 import io
 import json
 import logging
@@ -95,9 +96,13 @@ class _Source:
         return (self.path / name).stat().st_size
 
     def mtime(self, name):
+        """Modification time, naive UTC. Snapchat stamps each file in the zip
+        with the memory's time in UTC; unzip tools carry it over to the
+        extracted file."""
         if self.zip:
             return datetime(*self.zip.getinfo(name).date_time)
-        return datetime.fromtimestamp((self.path / name).stat().st_mtime)
+        stamp = (self.path / name).stat().st_mtime
+        return datetime.fromtimestamp(stamp, timezone.utc).replace(tzinfo=None)
 
 
 # --------------------------------------------------------------------------
@@ -316,6 +321,35 @@ def read_export(paths, extract_dir: Path):
     return memories, orphans
 
 
+def _match_by_time(memories, groups, tolerance=2.0):
+    """Attach file groups whose time stamp equals a memory's date (zip times
+    have a 2 s resolution). Returns the groups left over."""
+    pending = defaultdict(list)  # kind -> memories without media, by date
+    for mem in sorted((m for m in memories if m.main is None and m.date_utc), key=lambda m: m.date_utc):
+        pending[mem.media_type].append(mem)
+    stamps = {kind: [m.date_utc.timestamp() for m in mems] for kind, mems in pending.items()}
+    left = []
+    for key, files in sorted(groups, key=lambda g: (g[1]["main"][1] or datetime.min, g[1]["main"][0].name)):
+        path, mtime = files["main"]
+        kind = kind_from_ext(path)
+        mem = None
+        if mtime is not None and kind in pending:
+            t = mtime.replace(tzinfo=timezone.utc).timestamp()
+            mems = pending[kind]
+            i = bisect.bisect_left(stamps[kind], t - tolerance)
+            while i < len(mems) and stamps[kind][i] <= t + tolerance:
+                if mems[i].main is None:
+                    mem = mems[i]
+                    break
+                i += 1
+        if mem is None:
+            left.append((key, files))
+        else:
+            mem.main = path
+            mem.overlay = files.get("overlay", (None,))[0]
+    return left
+
+
 def _attach_bundled(memories, bundled):
     groups = defaultdict(dict)  # (date, id) -> {"main": (path, mtime), "overlay": ...}
     for path, mtime in bundled:
@@ -342,6 +376,10 @@ def _attach_bundled(memories, bundled):
             mem.overlay = files.get("overlay", (None,))[0]
         else:
             unmatched_groups.append((key, files))
+
+    # Exports without download links (so without ids): match each file to the
+    # memory saved at the same second as the file's time stamp.
+    unmatched_groups = _match_by_time(memories, unmatched_groups)
 
     # Fallback: pair remaining files with remaining memories of the same day
     # and kind, in chronological order.

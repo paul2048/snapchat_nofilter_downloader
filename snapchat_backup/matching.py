@@ -47,6 +47,12 @@ class Thresholds:
 # score photo_hash <= 20 and photo_thumb <= 4 and video mean <= 13, while a
 # second shot of the same scene framed 3% differently scores photo_thumb >= 7
 # (mostly far more) and other videos score a mean > 100.
+# Measured on a real export (635 memories, 2017-2020, mostly dark and shaky
+# phone videos): copies re-encoded at 75% size and CRF 28 score a video mean
+# of 0-53 (8 of 37 above LOOSE, so they are copied again), while the closest
+# of 57,000 pairs of different memories scores 63. The margin is thin, so the
+# thresholds stay on the safe side: a missed copy costs space, a false match
+# would leave a memory off the phone.
 #
 # Near-identical files (same media saved twice, byte-different copies).
 STRICT = Thresholds(photo_hash=16, photo_thumb=3, aspect_tol=0.01, video_frame=28, video_mean=14, video_good=0.9)

@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
 from .adb import PHONE_ROOT, Adb
 from .cache import FingerprintCache
 from .download import Downloader
@@ -28,7 +26,7 @@ from .metadata import (
     TimezoneResolver, link_or_copy, set_file_time, write_photo_metadata, write_video_metadata,
 )
 from .report import write_reports
-from .segments import SegmentConfig, concat_videos, find_chains
+from .segments import SegmentConfig, candidate_pairs, concat_videos, find_chains
 
 log = logging.getLogger("snapchat_backup")
 
@@ -204,8 +202,9 @@ class Backup:
             "probe": (self.cache.get_info, self.cache.put_info),
             "photo": (self.cache.get_photo, self.cache.put_photo),
             "video": (self.cache.get_video, self.cache.put_video),
+            "edge-frames": (self.cache.get_edges, self.cache.put_edges),
             "json": (self.cache.get_json, self.cache.put_json),
-        }[kind if kind in ("probe", "photo", "video") else "json"]
+        }[kind if kind in ("probe", "photo", "video", "edge-frames") else "json"]
         out, todo = {}, []
         for path, variant, args in jobs:
             key = FingerprintCache.key(kind, path, variant)
@@ -272,15 +271,12 @@ class Backup:
             m.info = result if kind == "video" else None
 
     def _edges(self, mem):
-        key = FingerprintCache.key("edges", mem.main)
-        hit = self.cache.get_json(key)
+        key = FingerprintCache.key("edge-frames", mem.main)  # not "edges": older runs cached another format
+        hit = self.cache.get_edges(key)
         if hit is None:
-            (fh, fs), (lh, ls) = edge_frames(mem.main)
-            hit = {"first": fh.tobytes().hex(), "fs": fs, "last": lh.tobytes().hex(), "ls": ls}
-            self.cache.put_json(key, hit)
-        first = np.frombuffer(bytes.fromhex(hit["first"]), dtype=np.uint8)
-        last = np.frombuffer(bytes.fromhex(hit["last"]), dtype=np.uint8)
-        return (first, hit["fs"]), (last, hit["ls"])
+            hit = edge_frames(mem.main)
+            self.cache.put_edges(key, hit)
+        return hit
 
     def _group(self, memories):
         ok = [m for m in memories if m.kind and not m.error]
@@ -289,6 +285,8 @@ class Backup:
         undated = [m for m in ok if m.kind == "video" and not m.date_utc]
         if self.o.segments.enabled and dated:
             log.info("Looking for long videos that were split into parts...")
+            near = {id(m): m for pair in candidate_pairs(dated, self.o.segments) for m in pair}.values()
+            self._cached("edge-frames", [(m.main, "", (m.main,)) for m in near], edge_frames, "comparing video parts")
         chains = find_chains(dated, self.o.segments, self._edges)
         self.cache.commit()
         items += [Item(chain, "video") for chain in chains]
@@ -308,12 +306,14 @@ class Backup:
     def _dates(self, items):
         resolver = TimezoneResolver(self.o.timezone, self.o.location_timezone)
         for it in items:
-            loc = next(((m.lat, m.lon) for m in it.memories if m.lat is not None), (None, None))
-            it.lat, it.lon = loc
-            if it.date_utc:
-                it.local_dt, it.tz_name = resolver.localize(it.date_utc, *loc)
-            else:
+            it.lat, it.lon = next(((m.lat, m.lon) for m in it.memories if m.lat is not None), (None, None))
+        zones = resolver.localize_all([(it.date_utc, it.lat, it.lon) for it in items])
+        for it, (local, name, nearby) in zip(items, zones):
+            it.local_dt, it.tz_name = local, name
+            if not it.date_utc:
                 it.notes.append("no date in the export")
+            elif nearby:
+                it.notes.append("no location: time zone of the memories saved around then")
             if not all(m.time_exact for m in it.memories):
                 it.notes.append("time approximate: matched to the export by day")
 
@@ -599,7 +599,9 @@ class Backup:
                 pixels = f.info.width * f.info.height
             else:
                 pixels = e.photos[0].width * e.photos[0].height if e.photos else 0
-            return (-pixels, -f.size, f.mtime, "camera" not in f.rel.lower(), f.rel)
+            # Best quality first, then the oldest, then the original name
+            # rather than a copy's ("IMG_1.jpg" before "IMG_1(1).jpg").
+            return (-pixels, -f.size, f.mtime, "camera" not in f.rel.lower(), len(f.rel), f.rel)
 
         for group in duplicate_groups(entries, STRICT)[0]:
             ordered = [e for e in sorted(group, key=quality) if e.key not in claimed]

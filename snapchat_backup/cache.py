@@ -83,7 +83,20 @@ class FingerprintCache:
     def put_video(self, key, v: VideoPrint):
         self._put(key, {"fps": v.fps}, v.hashes.tobytes(), v.std.astype(np.float32).tobytes())
 
-    # Generic JSON values (edge frames, sha256, ...) ------------------------
+    # First/last frames of a video (media.edge_frames) ---------------------
+    def get_edges(self, key):
+        row = self._get(key)
+        if not row:
+            return None
+        shape = tuple(json.loads(row[0])["shape"])
+        return (np.frombuffer(row[1], dtype=np.uint8).reshape(shape).copy(),
+                np.frombuffer(row[2], dtype=np.uint8).reshape(shape).copy())
+
+    def put_edges(self, key, edges):
+        first, last = edges
+        self._put(key, {"shape": list(first.shape)}, first.tobytes(), last.tobytes())
+
+    # Generic JSON values (sha256, ...) -------------------------------------
     def get_json(self, key):
         row = self._get(key)
         return json.loads(row[0]) if row else None

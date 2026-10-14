@@ -123,14 +123,15 @@ class VideoInfo:
         return self.acodec is not None
 
     def signature(self):
-        """Parameters that all segments of a single recording share."""
+        """Parameters that all segments of a single recording share. Not the
+        frame rate: phones record at a variable rate, so the average differs
+        from one segment to the next (e.g. 24.9, 25.0, then 20.7 in the dark)."""
         return (
             self.width,
             self.height,
             self.rotation,
             self.vcodec,
             self.pix_fmt,
-            round(self.fps, 1),
             self.acodec,
             self.sample_rate,
             self.channels,
@@ -276,14 +277,18 @@ def photo_print(path, overlay=None) -> PhotoPrint:
     return PhotoPrint(hash=hashes[0], thumb=thumb, std=float(std[0]), width=w, height=h)
 
 
-def thumb_difference(a: PhotoPrint, b: PhotoPrint, percentile=75):
-    """Robust pixel difference between two thumbnails (0-255).
+def frame_difference(a, b, percentile=75):
+    """Robust pixel difference between two RGB thumbnails (0-255).
 
     Uses a percentile instead of the mean so that a caption or sticker that
     only covers part of one image does not hide an otherwise identical photo.
     """
-    diff = np.abs(a.thumb.astype(np.int16) - b.thumb.astype(np.int16)).max(axis=2)
+    diff = np.abs(np.asarray(a, dtype=np.int16) - np.asarray(b, dtype=np.int16)).max(axis=-1)
     return float(np.percentile(diff, percentile))
+
+
+def thumb_difference(a: PhotoPrint, b: PhotoPrint, percentile=75):
+    return frame_difference(a.thumb, b.thumb, percentile)
 
 
 @dataclass
@@ -331,30 +336,38 @@ def video_print(path, overlay=None, size=None, fps=VIDEO_FPS) -> VideoPrint:
     return VideoPrint(hashes=hashes, std=std, fps=fps)
 
 
+EDGE_SIZE = 32
+
+
+def _raw_rgb_frames(cmd):
+    size = EDGE_SIZE * EDGE_SIZE * 3
+    raw = run(cmd).stdout
+    n = len(raw) // size
+    return np.frombuffer(raw[: n * size], dtype=np.uint8).reshape(n, EDGE_SIZE, EDGE_SIZE, 3)
+
+
 def edge_frames(path):
-    """Hashes of the very first and very last frame: ((hash, std), (hash, std))."""
-    first = _raw_gray_frames(
-        ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-vf", _SCALE, "-frames:v", "1",
-         "-an", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-    )
-    last = np.empty((0, _GRAY_H, _GRAY_W), dtype=np.uint8)
+    """The first two and the last two frames as small RGB thumbnails:
+    ((2, 32, 32, 3), (2, 32, 32, 3)) uint8 arrays, in playback order. Two
+    frames on each side tell how fast the picture moves at that end."""
+    scale = ["-vf", f"scale={EDGE_SIZE}:{EDGE_SIZE}:flags=area", "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    base = ["ffmpeg", "-v", "error", "-nostdin"]
+    first = _raw_rgb_frames(base + ["-i", str(path), "-frames:v", "2"] + scale)
+    last = np.empty((0, EDGE_SIZE, EDGE_SIZE, 3), dtype=np.uint8)
     try:
-        last = _raw_gray_frames(
-            ["ffmpeg", "-v", "error", "-nostdin", "-sseof", "-1.5", "-i", str(path), "-vf", _SCALE,
-             "-an", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-        )
+        last = _raw_rgb_frames(base + ["-sseof", "-1.5", "-i", str(path)] + scale)
     except MediaError:
         pass
-    if len(last) == 0:  # very short clip: decode everything
-        last = _raw_gray_frames(
-            ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-vf", _SCALE,
-             "-an", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-        )
+    if len(last) < 2:  # very short clip: decode everything
+        last = _raw_rgb_frames(base + ["-i", str(path)] + scale)
     if len(first) == 0 or len(last) == 0:
         raise MediaError(f"could not decode {path}")
-    fh, fs = _dhash(first[:1])
-    lh, ls = _dhash(last[-1:])
-    return (fh[0], float(fs[0])), (lh[0], float(ls[0]))
+    first, last = first[:2], last[-2:]
+    if len(first) == 1:  # a single frame: no motion to measure
+        first = np.concatenate([first, first])
+    if len(last) == 1:
+        last = np.concatenate([last, last])
+    return first, last
 
 
 # --------------------------------------------------------------------------

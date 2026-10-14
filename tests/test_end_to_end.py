@@ -65,12 +65,12 @@ def test_gallery_folder_mode(world, tmp_path):
     assert len(list((out / "extras" / "video_parts" / joined.stem).iterdir())) == 3
 
     # Parts saved with identical timestamps were put back in the right order.
-    v2 = out / "all_memories" / "Snapchat_20231002_110000.mp4"
+    v2 = out / "all_memories" / "Snapchat_20231002_100000.mp4"
     assert abs(probe_video(v2).duration - 18.0) < 0.5
 
     # Overlays are kept next to the media, not lost.
     overlays = {p.name for p in (out / "extras" / "overlays").iterdir() if p.is_file()}
-    assert "Snapchat_20231003_200000_overlay.png" in overlays
+    assert "Snapchat_20231003_190000_overlay.png" in overlays
     assert "Snapchat_20230715_194211_overlay.png" in overlays
 
     with open(out / "phone_cleanup.csv", encoding="utf-8-sig") as f:
